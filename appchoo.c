@@ -8,11 +8,67 @@ You should have received a copy of the CC0 Public Domain Dedication along with t
 #include <SDL.h>
 #include <SDL_image.h>
 #include <SDL_ttf.h>
-
 #include <SDL_rotozoom.h>
+#include <SDL_timer.h>
 
-#include <getopt.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <getopt.h>
+
+#define LENGTH 2048
+
+SDL_TimerID HB_Timer_ID = 0;
+
+Uint32 delay = 5000;  /* in ms = 10^(-3) sec! */
+
+char* sPWD = (char*)0;
+char* sAPPID = (char*)0;
+
+char tmp[LENGTH];
+
+int popen_gets()
+{
+  int k = LENGTH; int kk; char* p = tmp; FILE *fp;
+   
+  fp = popen(tmp, "r");
+   
+  if (fp == NULL) 
+    return (-1); /* printf("Failed to run command\n" ); */
+   
+  while (fgets(p, k, fp) != NULL)
+     {   
+	kk = strnlen(p, k);
+	p = p + kk;
+	k = k - kk;   
+     }
+   
+  return (pclose(fp));
+}
+
+const char* HB_CMDs[] = 
+{
+   "hb_init",
+   "hb_ping",
+   "hb_done"
+};
+
+int HB(int cmd, int d)
+{
+   int r;
+   
+   r = snprintf(tmp, LENGTH, "/bin/bash %s/hb.sh %s %d", sPWD, HB_CMDs[cmd], d);
+   r = popen_gets();
+
+   if ( (cmd == 2) || (r < 0))
+     return (d);
+   
+   r = atoi(tmp);
+
+   return (r);
+}
+
+
 
 static TTF_Font* font;
 
@@ -73,26 +129,30 @@ int handle_corner(int w, int h, int x, int y, int r2, int c)
 	return r2 > d2;
 }
 
-void handle_events(SDL_Surface *screen, SDL_Rect *rects, char **apps, int num, char corners[4][2048], int r2)
+int handle_events(SDL_Surface *screen, SDL_Rect *rects, char **apps, int num, char corners[4][2048], int r2)
 {
 	static int mouse_x = 0;
 	static int mouse_y = 0;
 	int button = 0;
 	SDL_Event event;
+   
 	while (SDL_PollEvent(&event)) {
 		switch (event.type) {
 			case SDL_KEYDOWN:
-				switch (event.key.keysym.sym) {
+		        {
+			
+				switch (event.key.keysym.sym) 
+		                {
 					case SDLK_q:
-						exit(1);
-						break;
+						return (2); break;
 					case SDLK_ESCAPE:
-						exit(1);
-						break;
+  						return (2); break;
 					default:
 						break;
 				}
 				break;
+			}
+		   
 			case SDL_MOUSEMOTION:
 				mouse_x = event.motion.x;
 				mouse_y = event.motion.y;
@@ -107,34 +167,41 @@ void handle_events(SDL_Surface *screen, SDL_Rect *rects, char **apps, int num, c
 				}
 				break;
 			case SDL_QUIT:
-		                TTF_CloseFont(font);
+		        {			
+			   return (1); break;
+		        }
 		   
-		                TTF_Quit();
-                                SDL_Quit();
 		   
-				exit(1);
-				break;
+		        case SDL_USEREVENT: 
+		        {
+   	                   /* and now we can call the function we wanted to call in the timer
+			      but couldn't because of the multithreading problems */			   
+			        void (*p) (Uint32*) = event.user.data1; p(event.user.data2);
+			        break;
+		        }		   
 			default:
 				break;
 		}
 	}
+   
 	if (!button)
-		return;
+		return (0);
 
 	for (int i = 0; i < 4; i++) {
 		if (*corners[i] && handle_corner(screen->w, screen->h, mouse_x, mouse_y, r2, i)) {
 			fputs(corners[i], stdout);
-			exit(0);
+			return (1);
 		}
 	}
 
 	for (int i = 0; i < num; i++) {
 		if (rects[i].x <= mouse_x && mouse_x < (rects[i].x + rects[i].w) && rects[i].y <= mouse_y && mouse_y < (rects[i].y + rects[i].h)) {
 			fputs(apps[i], stdout);
-			exit(0);
+			return (1);
 		}
 	}
-
+   
+        return (0);
 }
 
 SDL_Cursor *empty_cursor()
@@ -151,6 +218,9 @@ char *fn = "FreeMonoBold.ttf"; // default font
 
 void init(int argc, char **argv)
 {
+        sPWD = getenv("PWD");
+        sAPPID = getenv("APP_ID"); /* use HB? */
+   
 	for (;;) {
 		switch (getopt(argc, argv, "hct:d:p:f:")) {
 			case 'h':
@@ -185,8 +255,6 @@ void init(int argc, char **argv)
 	}
 }
 
-#define LENGTH 2048
-
 int check_corner(char *out, char *in, char *which)
 {
    if (in != strstr(in, which))
@@ -208,6 +276,37 @@ int check_corner(char *out, char *in, char *which)
 // out[strnlen(out, LENGTH) - 1] = 0;
    return 1;
 }
+
+void HB_PingPong(Uint32* param)
+{
+   int d = (((*param) + 500) / 1000);  /* millisec -> sec?!*/
+   int ret = HB(1, d); 
+   (void)ret;
+}
+
+
+/* with the same code as before: */
+Uint32 my_callbackfunc(Uint32 interval, void *param)
+{   
+       SDL_Event event;
+       SDL_UserEvent userevent;
+   
+       /* In this example, our callback pushes a function
+	*     into the queue, and causes our callback to be called again at the
+	*     same interval: */
+   
+       userevent.type = SDL_USEREVENT;
+       userevent.code = 0;
+       userevent.data1 = &HB_PingPong;
+       userevent.data2 = param;
+   
+       event.type = SDL_USEREVENT;
+       event.user = userevent;
+   
+       SDL_PushEvent(&event);
+       return(interval);
+}
+
 
 int main(int argc, char **argv)
 {
@@ -292,7 +391,18 @@ int main(int argc, char **argv)
 	   num++;
 	}
 
-	SDL_Init(SDL_INIT_VIDEO);
+        Uint32 flags = SDL_INIT_VIDEO;
+   
+        if( sAPPID != NULL ) 
+           flags = flags | SDL_INIT_TIMER;
+     
+        if (SDL_Init(flags) != 0)
+        {   
+	   fprintf(stderr, "\nUnable to initialize SDL:  %s\n", SDL_GetError() );
+	   return 1;
+	}
+   
+/*        atexit(SDL_Quit); */
    
         if(TTF_Init() == -1) 
         {
@@ -492,15 +602,40 @@ int main(int argc, char **argv)
 	}
 
 	SDL_Flip(screen);
+   
+        if( sAPPID != NULL )
+        {
+	   /* Start the timer; the callback below will be executed after the delay */	   
+	   HB_Timer_ID = SDL_AddTimer(delay, my_callbackfunc, &delay);
+        }
+   
 
+        int ret ;
 	for (;;) {
 		if (timeout && (int)SDL_GetTicks() > (timeout * 1000)) {
 			fputs(to_cmd, stdout);
 			exit(0);
 		}
 		SDL_Delay(100);
-		handle_events(screen, rects, apps, num, corners, r2);
+	   
+		if( (ret = handle_events(screen, rects, apps, num, corners, r2)) > 0 )
+	           break;
 	}
-	return 0;
+   
+        if( HB_Timer_ID != 0 )
+            SDL_RemoveTimer(HB_Timer_ID);
+
+        TTF_CloseFont(font);
+			   
+        TTF_Quit();
+   
+        HB(2, 0); 
+   
+        SDL_Quit();
+   
+        if (ret == 1)
+           return 0;
+   
+        return 1;
 }
 
